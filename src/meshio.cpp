@@ -30,7 +30,7 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
         extension = str_tolower(filename.substr(filename.size()-4));
 
     if (extension == ".ply")
-        load_ply(filename, F, V, true, progress);
+        load_ply(filename, F, V, N, false, progress);
     else if (extension == ".obj")
         load_obj(filename, F, V, progress);
     else if (extension == ".aln")
@@ -55,7 +55,7 @@ void write_mesh(const std::string &filename, const MatrixXu &F,
         throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj are supported)");
 }
 
-void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V, bool load_faces,
+void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V, MatrixXf &N, bool load_faces,
               const ProgressCallback &progress) {
     auto message_cb = [](p_ply ply, const char *msg) { cerr << "rply: " << msg << endl; };
 
@@ -92,14 +92,22 @@ void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V, bool load_f
 
     if (load_faces)
         F.resize(3, faceCount);
-    V.resize(3, vertexCount);
+	V.resize(3, vertexCount);
+	N.resize(3, vertexCount);
 
-    struct VertexCallbackData {
-        MatrixXf &V;
-        const ProgressCallback &progress;
-        VertexCallbackData(MatrixXf &V, const ProgressCallback &progress)
-            : V(V), progress(progress) {}
-    };
+	struct VertexCallbackData {
+		MatrixXf &V;
+		const ProgressCallback &progress;
+		VertexCallbackData(MatrixXf &_V, const ProgressCallback &progress)
+			: V(_V), progress(progress) {}
+	};
+
+	struct VertexNormalCallbackData {
+		MatrixXf &N;
+		const ProgressCallback &progress;
+		VertexNormalCallbackData(MatrixXf &_N, const ProgressCallback &progress)
+			: N(_N), progress(progress) {}
+	};
 
     struct FaceCallbackData {
         MatrixXu &F;
@@ -108,15 +116,25 @@ void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V, bool load_f
             : F(F), progress(progress) {}
     };
 
-    auto rply_vertex_cb = [](p_ply_argument argument) -> int {
-        VertexCallbackData *data; long index, coord;
-        ply_get_argument_user_data(argument, (void **) &data, &coord);
-        ply_get_argument_element(argument, nullptr, &index);
-        data->V(coord, index) = (Float) ply_get_argument_value(argument);
-        if (data->progress && coord == 0 && index % 500000 == 0)
-            data->progress("Loading vertex data", index / (Float) data->V.cols());
-        return 1;
-    };
+	auto rply_vertex_cb = [](p_ply_argument argument) -> int {
+		VertexCallbackData *data; long index, coord;
+		ply_get_argument_user_data(argument, (void **)&data, &coord);
+		ply_get_argument_element(argument, nullptr, &index);
+		data->V(coord, index) = (Float)ply_get_argument_value(argument);
+		if (data->progress && coord == 0 && index % 500000 == 0)
+			data->progress("Loading vertex data", index / (Float)data->V.cols());
+		return 1;
+	};
+
+	auto rply_vertex_normal_cb = [](p_ply_argument argument) -> int {
+		VertexNormalCallbackData *data; long index, coord;
+		ply_get_argument_user_data(argument, (void **)&data, &coord);
+		ply_get_argument_element(argument, nullptr, &index);
+		data->N(coord, index) = (Float)ply_get_argument_value(argument);
+		if (data->progress && coord == 0 && index % 500000 == 0)
+			data->progress("Loading vertex normal data", index / (Float)data->N.cols());
+		return 1;
+	};
 
     auto rply_index_cb = [](p_ply_argument argument) -> int {
         FaceCallbackData *data;
@@ -139,13 +157,18 @@ void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V, bool load_f
     };
 
     VertexCallbackData vcbData(V, progress);
+	VertexNormalCallbackData vncbData(N, progress);
     FaceCallbackData fcbData(F, progress);
 
     if (!ply_set_read_cb(ply, "vertex", "x", rply_vertex_cb, &vcbData, 0) ||
         !ply_set_read_cb(ply, "vertex", "y", rply_vertex_cb, &vcbData, 1) ||
-        !ply_set_read_cb(ply, "vertex", "z", rply_vertex_cb, &vcbData, 2)) {
+        !ply_set_read_cb(ply, "vertex", "z", rply_vertex_cb, &vcbData, 2) ||
+		!ply_set_read_cb(ply, "vertex", "nx", rply_vertex_normal_cb, &vncbData, 0) ||
+		!ply_set_read_cb(ply, "vertex", "ny", rply_vertex_normal_cb, &vncbData, 1) ||
+		!ply_set_read_cb(ply, "vertex", "nz", rply_vertex_normal_cb, &vncbData, 2)
+		) {
         ply_close(ply);
-        throw std::runtime_error("PLY file \"" + filename + "\" does not contain vertex position data!");
+        throw std::runtime_error("PLY file \"" + filename + "\" does not contain vertex position or normal data!");
     }
 
     if (load_faces) {
@@ -482,7 +505,7 @@ void load_pointcloud(const std::string &filename, MatrixXf &V, MatrixXf &N,
         fetch_string(filename_sub);
         MatrixXu F_sub;
         MatrixXf V_sub, N_sub;
-        load_ply(std::string(path_dir) + "/" + filename_sub, F_sub, V_sub);
+        load_ply(std::string(path_dir) + "/" + filename_sub, F_sub, V_sub, N_sub, false);
         Eigen::Matrix<Float, 4, 4> M;
         for (uint32_t k=0; k<16; ++k)
             fetch_float(M.data()[k]);
